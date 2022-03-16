@@ -1,6 +1,6 @@
-
 from telegram import ParseMode
 from telegram.utils.helpers import mention_html
+from chernovik_after_reg import random_task
 import sys
 import traceback
 import logging
@@ -12,13 +12,18 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     Filters,
-    ConversationHandler, CallbackContext,
+    ConversationHandler,
+    CallbackContext,
 )
 
-global password_from_login_nick_name
-global user_data
+global password_from_login_nick_name  # тк узнать ник пользователя на этапе пароля уже нельзя мы ищем \
+# пароль на этапе ника и ппередаем этот пароль для сравнения в этап пароля через глобальную переменную \
+# пояснение(пользователь когда вводит свой парол на этом же этапе уже тяжело узнать правильный ли он тк они могут потворяться, \
+# так что мы узнаем пароль юзера на этапе ника ищя в бд пароль введеного ника(ники - уникальны) и потом просто сравниаем его с веденным на этапе пароля
+global user_data # список со всеми данными пользователя
 global user_data2
 global for_dict
+global for_stages  # для определения этапа разговора и передачу его в step_back
 for_dict = ['ID', 'nick_name', 'name', 'surname', 'password']
 user_data = []
 user_data2 = {}
@@ -40,7 +45,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Определяем константы этапов разговора
-REGISTRATION_FIRST, REGISTRATION_NICK_NAME, REGISTRATION_NAME, REGISTRATION_SURNAME, REGISTRATION_PASSWORD, LOGIN, LOGIN_NICK_NAME, LOGIN_PASSWORD, CANCEL = range(9)
+REGISTRATION_FIRST, REGISTRATION_NICK_NAME, REGISTRATION_NAME, REGISTRATION_SURNAME, REGISTRATION_PASSWORD, \
+LOGIN, LOGIN_NICK_NAME, LOGIN_PASSWORD, CANCEL, AFTER_LOGIN= range(10)
 
 
 # функция обратного вызова точки входа в разговор
@@ -72,7 +78,6 @@ def registration(update: Update, context: CallbackContext):
     return REGISTRATION_FIRST
 
 
-
 def login(update: Update, context: CallbackContext):
     reply_keyboard = [['/back']]
     markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
@@ -82,16 +87,43 @@ def login(update: Update, context: CallbackContext):
     return LOGIN_NICK_NAME
 
 
-
 def back(update: Update, context: CallbackContext):
     user = update.message.from_user
     reply_keyboard = [['/registration', '/login']]
     markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     logger.info("Юсер %s вернулся назад", user.first_name)
     ID = update.message.chat_id
-    context.bot.send_message(ID,text='back',reply_markup=markup_key)
-    return  ConversationHandler.END
+    context.bot.send_message(ID, text='back', reply_markup=markup_key)
+    return ConversationHandler.END
 
+
+def step_back(update: Update, context: CallbackContext):
+    global user_data
+    reply_keyboard = [['/back']]
+    markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
+    ID = update.message.chat_id
+    context.bot.send_message(chat_id=ID, text="шаг назад", reply_markup=markup_key)
+    if for_stages == REGISTRATION_NICK_NAME:
+        context.bot.send_message(chat_id=ID, text="1/4"
+                                      "Введите свой ник", reply_markup=markup_key)
+        user_data.pop(0)
+    elif for_stages == REGISTRATION_NAME:
+        context.bot.send_message(chat_id=ID,
+                                 text="2/4"
+                                      "Введите свое имя", reply_markup=markup_key)
+        user_data.pop(1)
+    elif for_stages == REGISTRATION_SURNAME:
+        context.bot.send_message(chat_id=ID,
+                                 text="3/4"
+                                      "Введите свою фамилию", reply_markup=markup_key)
+        user_data.pop(2)
+    elif for_stages == REGISTRATION_PASSWORD:
+        context.bot.send_message(chat_id=ID,
+                                 text="4/4"
+                                      "Введите свой пароль", reply_markup=markup_key)
+        user_data.pop(3)
+
+    return for_stages
 
 
 def login_nick_name(update: Update, context: CallbackContext):
@@ -99,7 +131,7 @@ def login_nick_name(update: Update, context: CallbackContext):
     user_nick_name = update.message.text
     # print(update.update_id)
     try:
-        reply_keyboard = [['/back']]
+        reply_keyboard = [['/back', '/step_back']]
         markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
         ### извлекаю все данные из таблицы и смотрю есть ли в нем такой никнейм
         cursor = connection.cursor()
@@ -120,10 +152,12 @@ def login_nick_name(update: Update, context: CallbackContext):
                     """, (user_nick_name,))
             global password_from_login_nick_name
             password_from_login_nick_name = cursor.fetchone()[0]
-            context.bot.send_message(chat_id=ID, text="Отлично теперь введите свой пароль",reply_markup=markup_key )
+            context.bot.send_message(chat_id=ID, text="Отлично теперь введите свой пароль", reply_markup=markup_key)
             return LOGIN_PASSWORD
         else:
-            context.bot.send_message(chat_id=ID, text="Такого никнейма не существует, пожалуйста зарегиструйтесь или проверьте правильно ли вы ввели" ,reply_markup=markup_key)
+            context.bot.send_message(chat_id=ID,
+                                     text="Такого никнейма не существует, пожалуйста зарегиструйтесь или проверьте правильно ли вы ввели",
+                                     reply_markup=markup_key)
 
         ###
     except Exception as _ex:
@@ -140,6 +174,8 @@ def login_password(update, context: CallbackContext):
     ID = update.message.chat_id
     markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     user_password = update.message.text
+    global for_stages
+    for_stages = LOGIN_PASSWORD
     try:
         reply_keyboard = [['/back']]
         markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True)
@@ -147,15 +183,16 @@ def login_password(update, context: CallbackContext):
         cursor = connection.cursor()
         cursor.execute("""
             SELECT password FROM users WHERE password = crypt(%s, password);""",
-            (user_password,)
+                       (user_password,)
                        )
 
         ###
         if password_from_login_nick_name == cursor.fetchone()[0]:
-            context.bot.send_message(chat_id=ID, text="Вы успешно вошли в аккаунт",reply_markup=markup_key )
-            return back
+            context.bot.send_message(chat_id=ID, text="Вы успешно вошли в аккаунт", reply_markup=markup_key)
+            return after_login(update, context)
         else:
-            context.bot.send_message(chat_id=ID, text="Не верный пароль пожалуйста попробуйте еще раз" ,reply_markup=markup_key)
+            context.bot.send_message(chat_id=ID, text="Не верный пароль пожалуйста попробуйте еще раз",
+                                     reply_markup=markup_key)
 
         ###
     except Exception as _ex:
@@ -167,9 +204,6 @@ def login_password(update, context: CallbackContext):
             print("[INFO] PostgreSQL connection closed")
 
 
-
-
-
 def registration_first(update, context: CallbackContext):
     reply_keyboard = [['/back']]
     markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
@@ -178,6 +212,7 @@ def registration_first(update, context: CallbackContext):
     user = update.message.from_user
     # Пишем в журнал пол пользователя
     logger.info("Пароль %s: %s", user.first_name, update.message.text)
+    print(update.message.text)
     if update.message.text == '1234':
         context.bot.send_message(chat_id=ID,
                                  text="1/4"
@@ -188,12 +223,16 @@ def registration_first(update, context: CallbackContext):
 
 
 def registration_nick_name(update, context: CallbackContext):
-    reply_keyboard = [['/back']]
+    global user_data
+    reply_keyboard = [['/back', '/step_back']]
     markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     user = update.message.from_user
     text = update.message.text
-    logger.info("Пользователь %s рассказал: %s", user.first_name, text) # это какая то ересть котора выводит мне в панель что говорит юсер
-    ID = update.message.chat_id # получаем id пользователя что бы отправлять ему сообщение а не всем
+    global for_stages
+    for_stages = REGISTRATION_NICK_NAME
+    logger.info("Пользователь %s рассказал ник: %s", user.first_name,
+                text)  # это какая то ересть котора выводит мне в панель что говорит юсер
+    ID = update.message.chat_id  # получаем id пользователя что бы отправлять ему сообщение а не всем
     user_nick_name = update.message.text
     print(user_nick_name)
     try:
@@ -212,7 +251,8 @@ def registration_nick_name(update, context: CallbackContext):
         ### если никнейм уже есть такой пишу типа пошел нахуй, меняй иначе перехожу дальше а никнейм сохр в глоб список который потом занесем в бд
         if user_nick_name in users_info:
             context.bot.send_message(chat_id=ID,
-                                     text="Такой никнейм уже занят, пожалуйста выберите другой или войдиете в систему", reply_markup=markup_key)
+                                     text="Такой никнейм уже занят, пожалуйста выберите другой или войдиете в систему",
+                                     reply_markup=markup_key)
         else:
             user_data.append(user_nick_name)
             context.bot.send_message(chat_id=ID,
@@ -230,14 +270,15 @@ def registration_nick_name(update, context: CallbackContext):
             print("[INFO] PostgreSQL connection closed")
 
 
-
-
 def registration_name(update, context: CallbackContext):
-    reply_keyboard = [['/back']]
+    global user_data
+    reply_keyboard = [['/back', '/step_back']]
     markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     user = update.message.from_user
     text = update.message.text
-    logger.info("Пользователь %s рассказал: %s", user.first_name,
+    global for_stages
+    for_stages = REGISTRATION_NAME
+    logger.info("Пользователь %s рассказал имя: %s", user.first_name,
                 text)  # это какая то ересть котора выводит мне в панель что говорит юсер
     ID = update.message.chat_id  # получаем id пользователя что бы отправлять ему сообщение а не всем
     user_name = update.message.text
@@ -258,7 +299,8 @@ def registration_name(update, context: CallbackContext):
         ### если никнейм уже есть такой пишу типа пошел нахуй, меняй иначе перехожу дальше а никнейм сохр в глоб список который потом занесем в бд
         if user_name in users_info:
             context.bot.send_message(chat_id=ID,
-                                     text="Такой никнейм уже занят, пожалуйста выберите другой или войдиете в систему", reply_markup=markup_key)
+                                     text="Такой никнейм уже занят, пожалуйста выберите другой или войдиете в систему",
+                                     reply_markup=markup_key)
         else:
             user_data.append(user_name)
             context.bot.send_message(chat_id=ID,
@@ -277,13 +319,15 @@ def registration_name(update, context: CallbackContext):
             print("[INFO] PostgreSQL connection closed")
 
 
-
 def registration_surname(update, context: CallbackContext):
-    reply_keyboard = [['/back']]
+    global user_data
+    reply_keyboard = [['/back', '/step_back']]
     markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     user = update.message.from_user
     text = update.message.text
-    logger.info("Пользователь %s рассказал: %s", user.first_name,
+    global for_stages
+    for_stages = REGISTRATION_SURNAME
+    logger.info("Пользователь %s рассказал фамилию: %s", user.first_name,
                 text)  # это какая то ересть котора выводит мне в панель что говорит юсер
     ID = update.message.chat_id  # получаем id пользователя что бы отправлять ему сообщение а не всем
     user_surname = update.message.text
@@ -304,7 +348,8 @@ def registration_surname(update, context: CallbackContext):
         ### если никнейм уже есть такой пишу типа пошел нахуй, меняй иначе перехожу дальше а никнейм сохр в глоб список который потом занесем в бд
         if user_surname in users_info:
             context.bot.send_message(chat_id=ID,
-                                     text="Такой никнейм уже занят, пожалуйста выберите другой или войдиете в систему", reply_markup=markup_key)
+                                     text="Такой никнейм уже занят, пожалуйста выберите другой или войдиете в систему",
+                                     reply_markup=markup_key)
         else:
             user_data.append(user_surname)
             context.bot.send_message(chat_id=ID,
@@ -324,11 +369,14 @@ def registration_surname(update, context: CallbackContext):
 
 
 def registration_password(update, context: CallbackContext):
-    reply_keyboard = [['/back']]
+    global user_data
+    reply_keyboard = [['/back', '/step_back']]
     markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
     user = update.message.from_user
     text = update.message.text
-    logger.info("Пользователь %s рассказал: %s", user.first_name,
+    global for_stages
+    for_stages = REGISTRATION_PASSWORD
+    logger.info("Пользователь %s рассказал пароль: %s", user.first_name,
                 text)  # это какая то ересть котора выводит мне в панель что говорит юсер
     ID = update.message.chat_id  # получаем id пользователя что бы отправлять ему сообщение а не всем
     user_password = update.message.text
@@ -349,8 +397,10 @@ def registration_password(update, context: CallbackContext):
         ### если никнейм уже есть такой пишу типа пошел нахуй, меняй иначе перехожу дальше а никнейм сохр в глоб список который потом занесем в бд
         if user_password in users_info:
             context.bot.send_message(chat_id=ID,
-                                     text="Такой никнейм уже занят, пожалуйста выберите другой или войдиете в систему",  reply_markup=markup_key)
+                                     text="Такой никнейм уже занят, пожалуйста выберите другой или войдиете в систему",
+                                     reply_markup=markup_key)
         else:
+            markup_key = ReplyKeyboardRemove() # удаление клавы
             user_data.append(user_password)
             # context.bot.send_message(chat_id=ID,
             #                          text="4/4"
@@ -358,7 +408,9 @@ def registration_password(update, context: CallbackContext):
             print(user_data)
             user_data.clear()
             print(user_data)
-            return back
+            context.bot.send_message(chat_id=ID,
+                                     text="вы успешно зарегались",reply_markup=markup_key)
+            return ConversationHandler.END
 
         ###
     except Exception as _ex:
@@ -369,8 +421,26 @@ def registration_password(update, context: CallbackContext):
             # connection.close()
             print("[INFO] PostgreSQL connection closed")
 
+
+def after_login(update, context: CallbackContext):
+    reply_keyboard = [['/random_task', '/dictionary']]
+    markup_key = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+    ID = update.message.chat_id
+    context.bot.send_message(chat_id=ID,
+                             text="выберите варианты",
+                             reply_markup=markup_key)
+
+
+# TODO:
+# 1) доделать step_back  с помощью глобальной переменной передавая ей этапы разговора.
+
+# TODO: с регистрацией в общем плане все готово, остались толдько не большие доработки. Теперь
+# 1) разобрать в связях бд \
+# 2) придумать шаблоны заданий и реализовать пока хотя бы один
+# 3) сделать добавления слов в словарь и парсить их с сайтов с преводам, так же записывать эти слова в свои файлы
+
+
 # TODO: я сделал использованпие словаря в логин пассворд, теперь нужно везде заменить такой спсоб тк он удобнее и закончить функцию логин пассворд, заполнить бд еще \
-# TODO: одним пользователем для норм тестов, сделать словарь  в словаре и выборку данных в соответствии
 
 # TODO: добавить ввод данного списка (user_data) в базу данных, user_data это список в который мы добавляем все данные. \
 #  Так же в файле main я создавал таблицы с хэшированными данными так что если что то забыл смотреть это там.
@@ -394,6 +464,7 @@ def cancel(update, _):
     # Заканчиваем разговор.
     return ConversationHandler.END
 
+
 ### error обработчик каких то ошибок как я понял свзанных с смим телеграмом или внешними показателяит не свазаными с программой по типу ошибки отпраки сообщения из за интернета
 # это общая функция обработчика ошибок.
 # Если нужна дополнительная информация о конкретном типе сообщения,
@@ -402,11 +473,11 @@ def error(update, context):
     # добавьте все идентификаторы разработчиков в этот список.
     # Можно добавить идентификаторы каналов или групп.
     devs = [713119906]
-   # Уведомление пользователя об этой проблеме.
-   # Уведомления будут работать, только если сообщение НЕ является
-   # обратным вызовом, встроенным запросом или обновлением опроса.
-   # В случае, если это необходимо, то имейте в виду, что отправка
-   # сообщения может потерпеть неудачу
+    # Уведомление пользователя об этой проблеме.
+    # Уведомления будут работать, только если сообщение НЕ является
+    # обратным вызовом, встроенным запросом или обновлением опроса.
+    # В случае, если это необходимо, то имейте в виду, что отправка
+    # сообщения может потерпеть неудачу
     if update.effective_message:
         text = "К сожалению произошла ошибка в момент обработки сообщения. " \
                "Мы уже работаем над этой проблемой."
@@ -439,6 +510,8 @@ def error(update, context):
     # Необходимо снова вызывать ошибку, для того, чтобы модуль `logger` ее записал.
     # Если вы не используете этот модуль, то самое время задуматься.
     raise
+
+
 ###
 
 if __name__ == '__main__':
@@ -450,30 +523,33 @@ if __name__ == '__main__':
 
     # Определяем обработчик разговоров `ConversationHandler`
     # с состояниями GENDER, PHOTO, LOCATION и BIO
-    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CommandHandler("start", start, run_async=True))
+    dispatcher.add_handler(CommandHandler("random_task", random_task, run_async=True))
     # dispatcher.add_handler(CommandHandler("back", back))
     # dispatcher.add_handler(CommandHandler("login", login))
     conv_handler = ConversationHandler(  # здесь строится логика разговора
         # точка входа в разговор
-        entry_points=[ CommandHandler('registration',registration), CommandHandler("login", login)],
-    #MessageHandler(Filters.text & Filters.regex & (~ Filters.command)
+        entry_points=[CommandHandler('registration', registration, run_async=True), CommandHandler("login", login, run_async=True)],
+        # MessageHandler(Filters.text & Filters.regex & (~ Filters.command)
         # этапы разговора, каждый со своим списком обработчиков сообщений
         states={
-            REGISTRATION_FIRST: [MessageHandler(Filters.text & (~ Filters.command), registration_first)],
-            REGISTRATION_NICK_NAME: [MessageHandler(Filters.text & (~ Filters.command), registration_nick_name)],
-            REGISTRATION_NAME: [MessageHandler(Filters.text & (~ Filters.command), registration_name)],
-            REGISTRATION_SURNAME: [MessageHandler(Filters.text & (~ Filters.command), registration_surname)],
-            REGISTRATION_PASSWORD: [MessageHandler(Filters.text & (~ Filters.command), registration_password)],
-            LOGIN: [MessageHandler(Filters.text & (~ Filters.command), login)],
-            LOGIN_NICK_NAME: [MessageHandler(Filters.text & (~ Filters.command), login_nick_name)],
-            LOGIN_PASSWORD: [MessageHandler(Filters.text & (~ Filters.command), login_password)]
+            REGISTRATION_FIRST: [MessageHandler(Filters.text & (~ Filters.command), registration_first,run_async=True)],
+            REGISTRATION_NICK_NAME: [MessageHandler(Filters.text & (~ Filters.command), registration_nick_name,run_async=True)],
+            REGISTRATION_NAME: [MessageHandler(Filters.text & (~ Filters.command), registration_name,run_async=True)],
+            REGISTRATION_SURNAME: [MessageHandler(Filters.text & (~ Filters.command), registration_surname,run_async=True)],
+            REGISTRATION_PASSWORD: [MessageHandler(Filters.text & (~ Filters.command), registration_password,run_async=True)],
+            LOGIN: [MessageHandler(Filters.text & (~ Filters.command), login,run_async=True)],
+            LOGIN_NICK_NAME: [MessageHandler(Filters.text & (~ Filters.command), login_nick_name,run_async=True)],
+            LOGIN_PASSWORD: [MessageHandler(Filters.text & (~ Filters.command), login_password,run_async=True)],
+            AFTER_LOGIN: [MessageHandler(Filters.text & (~ Filters.command), after_login,run_async=True)]
 
         },
         # точка выхода из разговора
-        fallbacks=[CommandHandler('back', back), CommandHandler('cancel', cancel)],)
+        fallbacks=[CommandHandler('back', back,run_async=True), CommandHandler('cancel', cancel,run_async=True),
+                   CommandHandler('step_back', step_back,run_async=True)], )
 
     # Добавляем обработчик разговоров `conv_handler`
-    dispatcher.add_handler(conv_handler,1)
+    dispatcher.add_handler(conv_handler, 1)
 
     # Запуск бота
     updater.start_polling()
